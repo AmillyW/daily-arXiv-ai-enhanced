@@ -10,9 +10,11 @@ class ArxivSpider(scrapy.Spider):
         categories = categories.split(",")
         # 保存目标分类列表，用于后续验证
         self.target_categories = set(map(str.strip, categories))
+        # 新增：定义要排除的分类（黑名单）
+        self.exclude_categories = {"astro-ph.GA", "astro-ph.IM", "astro-ph.EP", "astro-ph.SR", "hep-ex", "hep-lat", "nucl-ex"}
         self.start_urls = [
             f"https://arxiv.org/list/{cat}/new" for cat in self.target_categories
-        ]  # 起始URL（计算机科学领域的最新论文）
+        ]  # 起始URL
 
     name = "arxiv"  # 爬虫名称
     allowed_domains = ["arxiv.org"]  # 允许爬取的域名
@@ -41,6 +43,25 @@ class ArxivSpider(scrapy.Spider):
                 continue
                 
             arxiv_id = abstract_link.split("/")[-1]
+
+            # 获取标题用于关键词匹配
+            title_text = paper.css(".list-title::text").getall()
+            title = "".join(title_text).replace("Title:", "").strip().lower()
+            
+            # 定义重点关注关键词 (全部小写)
+            focus_keywords = [
+                "cosmological bootstrap", 
+                "bootstrap", # 可以考虑单独的 bootstrap，或者结合 cosmological
+                "eftoflss", 
+                "effective field theory of large scale structure",
+                "large-scale structure",
+                "large scale structure",
+                "nonlinear structure growth",
+                "non-linear structure",
+                "renormalization group" 
+            ]
+            
+            is_focused = any(keyword in title for keyword in focus_keywords)
             
             # 获取对应的论文描述部分 (dd元素)
             paper_dd = paper.xpath("following-sibling::dd[1]")
@@ -60,10 +81,16 @@ class ArxivSpider(scrapy.Spider):
                 
                 # 检查论文分类是否与目标分类有交集
                 paper_categories = set(categories_in_paper)
+                
+                # 如果包含重点关键词，即使有实验分类也不过滤 (豁免权)
+                if not is_focused and paper_categories.intersection(self.exclude_categories):
+                    continue
+
                 if paper_categories.intersection(self.target_categories):
                     yield {
                         "id": arxiv_id,
-                        "categories": list(paper_categories),  # 添加分类信息用于调试
+                        "categories": list(paper_categories),
+                        "is_focused": is_focused, # 新增一个字段，标记是否为重点关注文章
                     }
                     self.logger.info(f"Found paper {arxiv_id} with categories {paper_categories}")
                 else:
