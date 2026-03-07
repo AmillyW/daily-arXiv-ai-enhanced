@@ -900,6 +900,46 @@ function formatAuthorsForCard(authorsString, authorTerms = []) {
   return result.join(', ');
 }
 
+// 渲染页面中所有 LaTeX 公式（使用 KaTeX auto-render）
+function renderMath(element) {
+  const target = element || document.body;
+  if (typeof renderMathInElement === 'function') {
+    renderMathInElement(target, {
+      delimiters: [
+        { left: '$$', right: '$$', display: true },
+        { left: '$', right: '$', display: false },
+        { left: '\\(', right: '\\)', display: false },
+        { left: '\\[', right: '\\]', display: true }
+      ],
+      throwOnError: false
+    });
+  }
+}
+
+// 复制时将 KaTeX 渲染结果替换为 LaTeX 源码
+document.addEventListener('copy', function(e) {
+  const selection = window.getSelection();
+  if (!selection || selection.rangeCount === 0) return;
+
+  const range = selection.getRangeAt(0);
+  const fragment = range.cloneContents();
+  const katexEls = fragment.querySelectorAll('.katex');
+  if (katexEls.length === 0) return;
+
+  let text = selection.toString();
+  katexEls.forEach(el => {
+    const annotation = el.querySelector('annotation[encoding="application/x-tex"]');
+    if (annotation) {
+      const src = annotation.textContent.trim();
+      const rendered = el.textContent;
+      text = text.replace(rendered, '$' + src + '$');
+    }
+  });
+
+  e.clipboardData.setData('text/plain', text);
+  e.preventDefault();
+});
+
 function renderPapers() {
   const container = document.getElementById('paperContainer');
   container.innerHTML = '';
@@ -1233,6 +1273,9 @@ function renderPapers() {
     
     container.appendChild(paperCard);
   });
+
+  // 渲染论文卡片中的 LaTeX 公式
+  renderMath(container);
 }
 
 function showPaperDetails(paper, paperIndex) {
@@ -1345,10 +1388,8 @@ function showPaperDetails(paper, paperIndex) {
   
   // Update modal content
   document.getElementById('modalBody').innerHTML = modalContent;
-  // 当页面内容更新后，检查 MathJax 是否已加载，如果加载了就命令它重新排版
-  if (window.MathJax) {
-    MathJax.typesetPromise().catch((err) => console.log('MathJax渲染错误: ', err));
-  }
+  // 渲染弹窗中的 LaTeX 公式
+  renderMath(document.getElementById('modalBody'));
   document.getElementById('paperLink').href = paper.url;
   document.getElementById('pdfLink').href = paper.url.replace('abs', 'pdf');
   document.getElementById('htmlLink').href = paper.url.replace('abs', 'html');
