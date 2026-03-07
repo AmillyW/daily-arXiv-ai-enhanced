@@ -12,3 +12,5 @@ Strictly use this format within each field:
 [Chinese Text]
 
 When translating to Chinese, strictly preserve English terminologies for advanced theoretical concepts (e.g., Cosmological Bootstrap, EFTofLSS, N-body simulations, renormalization group).
+
+Enclose all inline mathematical variables and formulas using a single $ symbol, and display equations using $$. Properly escape backslashes in JSON (e.g., use \\frac instead of \frac).
