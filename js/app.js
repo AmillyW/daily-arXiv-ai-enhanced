@@ -726,7 +726,28 @@ function parseJsonlData(jsonlText, date) {
       
       const primaryCategory = allCategories[0];
       
-      const formatText = (text) => text ? text.replace(/\\n/g, '<br>').replace(/\n/g, '<br>') : '';
+      const formatText = (text) => {
+        if (!text) return '';
+        // 修复双重转义的反斜杠：某些 LLM 输出会把 \dot 写成 \\dot
+        // JSON.parse 之后 \\\\ -> \\，但 KaTeX 需要单个 \，所以这里统一修复
+        let t = text.replace(/\\\\(?=[a-zA-Z{([\]])/g, '\\');
+        // 提取并保护所有数学公式块（$$...$$、$...$、\[...\]、\(...\)），避免换行替换打断公式
+        const mathBlocks = [];
+        let protected_text = t
+          // 保护 $$...$$ 块级公式（含跨行）
+          .replace(/\$\$[\s\S]*?\$\$/g, (m) => { mathBlocks.push(m); return `\x00MATH${mathBlocks.length - 1}\x00`; })
+          // 保护 \[...\] 块级公式
+          .replace(/\\\[[\s\S]*?\\\]/g, (m) => { mathBlocks.push(m); return `\x00MATH${mathBlocks.length - 1}\x00`; })
+          // 保护 \(...\) 行内公式
+          .replace(/\\\([\s\S]*?\\\)/g, (m) => { mathBlocks.push(m); return `\x00MATH${mathBlocks.length - 1}\x00`; })
+          // 保护 $...$ 行内公式（非贪婪，不跨行）
+          .replace(/\$[^$\n]+?\$/g, (m) => { mathBlocks.push(m); return `\x00MATH${mathBlocks.length - 1}\x00`; });
+        // 替换换行符
+        protected_text = protected_text.replace(/\\n/g, '<br>').replace(/\n/g, '<br>');
+        // 还原数学公式
+        protected_text = protected_text.replace(/\x00MATH(\d+)\x00/g, (_, i) => mathBlocks[parseInt(i)]);
+        return protected_text;
+      };
 
       if (!result[primaryCategory]) {
         result[primaryCategory] = [];
@@ -900,42 +921,139 @@ function formatAuthorsForCard(authorsString, authorTerms = []) {
   return result.join(', ');
 }
 
+// 修复数据源中双重转义的反斜杠（\\dot -> \dot 等）
+// JSON 解析后 \\ 变成 \，但某些数据源会多一层转义导致公式里出现字面 \\
+function fixLatexEscaping(text) {
+  if (!text) return text;
+  return text.replace(/\$\$[\s\S]*?\$\$|\$[^$\n]*?\$/g, function(match) {
+    return match.replace(/\\\\/g, '\\');
+  });
+}
+
+// 将文本节点中的裸 LaTeX 命令包裹上 $ 定界符
+// 针对 Image 2 的情况：LLM 生成的 summary 里有未被 $ 包裹的 \int、\sqrt 等命令
+function wrapBareLaTeX(element) {
+  // 匹配以反斜杠开头的常见 LaTeX 命令序列（非贪婪，行内）
+  // 例如：\int d^2\sigma\sqrt{-g} 或 \phi^2 R^{(2)}
+  const bareLaTeXPattern = /(?<![\\$])(\\[a-zA-Z]+(?:\{[^}]*\}|\[[^\]]*\]|[\^_][{]?[^}\s,\.;:!\?'"]*[}]?)*(?:\s*[+\-]?\s*(?:\\[a-zA-Z]+(?:\{[^}]*\}|\[[^\]]*\]|[\^_][{]?[^}\s,\.;:!\?'"]*[}]?)*|[\^_][{]?[^}\s,\.;:!\?'"]*[}]?))*)/g;
+
+  const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT, {
+    acceptNode(node) {
+      // 跳过已经在 katex 元素内、或 script/style 里的文本
+      let p = node.parentElement;
+      while (p) {
+        if (['SCRIPT', 'STYLE', 'CODE', 'PRE'].includes(p.tagName)) return NodeFilter.FILTER_REJECT;
+        if (p.classList && (p.classList.contains('katex') || p.classList.contains('katex-html'))) return NodeFilter.FILTER_REJECT;
+        p = p.parentElement;
+      }
+      return NodeFilter.FILTER_ACCEPT;
+    }
+  });
+
+  const nodesToProcess = [];
+  let node;
+  while ((node = walker.nextNode())) {
+    // 只处理包含反斜杠但没有 $ 包裹的节点
+    if (node.textContent.includes('\\') && !node.textContent.includes('$')) {
+      nodesToProcess.push(node);
+    }
+  }
+
+  nodesToProcess.forEach(textNode => {
+    const original = textNode.textContent;
+    // 简单策略：如果整段文本是一个裸 LaTeX 块（比如一整行是 \int d^2\sigma...），包上 $$
+    // 否则用行内 $ 包裹匹配片段
+    if (/^[\s]*\\[a-zA-Z]/.test(original) && !/[a-z]{3,}/i.test(original.replace(/\\[a-zA-Z]+/g, ''))) {
+      // 整行都是 LaTeX：用 $$ 包裹
+      const span = document.createElement('span');
+      span.textContent = `$$${original.trim()}$$`;
+      textNode.parentNode.replaceChild(span, textNode);
+    } else {
+      // 行内混合：用 $ 包裹检测到的 LaTeX 片段
+      const newHTML = original.replace(bareLaTeXPattern, (match) => {
+        if (match.trim().length < 2) return match;
+        return `$${match}$`;
+      });
+      if (newHTML !== original) {
+        const span = document.createElement('span');
+        span.innerHTML = newHTML;
+        textNode.parentNode.replaceChild(span, textNode);
+      }
+    }
+  });
+}
+
 // 渲染页面中所有 LaTeX 公式（使用 KaTeX auto-render）
 function renderMath(element) {
   const target = element || document.body;
-  if (typeof renderMathInElement === 'function') {
-    renderMathInElement(target, {
-      delimiters: [
-        { left: '$$', right: '$$', display: true },
-        { left: '$', right: '$', display: false },
-        { left: '\\(', right: '\\)', display: false },
-        { left: '\\[', right: '\\]', display: true }
-      ],
-      throwOnError: false
-    });
-  }
+  if (typeof renderMathInElement !== 'function') return;
+
+  // 预处理1：修复 HTML 内容中双重转义的反斜杠（\\\\ -> \\）
+  const textContainers = target.querySelectorAll(
+    '.paper-card-summary, .paper-card-title, ' +
+    '.modal-section-content, .modal-section p, ' +
+    '.paper-card-body p, [class*="modal"]'
+  );
+  textContainers.forEach(node => {
+    if (node.innerHTML.includes('\\\\')) {
+      node.innerHTML = node.innerHTML.replace(/\\\\/g, '\\');
+    }
+  });
+
+  // 预处理2：将裸 LaTeX（无定界符）自动包上 $ 定界符
+  wrapBareLaTeX(target);
+
+  renderMathInElement(target, {
+    delimiters: [
+      { left: '$$', right: '$$', display: true },
+      { left: '$',  right: '$',  display: false },
+      { left: '\\(', right: '\\)', display: false },
+      { left: '\\[', right: '\\]', display: true  }
+    ],
+    // htmlAndMathml 模式保留 <annotation> 标签，复制功能依赖它
+    output: 'htmlAndMathml',
+    throwOnError: false,
+    ignoredTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code'],
+  });
 }
 
-// 复制时将 KaTeX 渲染结果替换为 LaTeX 源码
+// 复制时将 KaTeX 渲染结果替换回 LaTeX 源码
+// 方案：遍历选区内的 DOM 节点，逐段重建纯文本，遇到 .katex 就取其 annotation
 document.addEventListener('copy', function(e) {
   const selection = window.getSelection();
   if (!selection || selection.rangeCount === 0) return;
 
   const range = selection.getRangeAt(0);
   const fragment = range.cloneContents();
-  const katexEls = fragment.querySelectorAll('.katex');
-  if (katexEls.length === 0) return;
 
-  let text = selection.toString();
-  katexEls.forEach(el => {
-    const annotation = el.querySelector('annotation[encoding="application/x-tex"]');
-    if (annotation) {
-      const src = annotation.textContent.trim();
-      const rendered = el.textContent;
-      text = text.replace(rendered, '$' + src + '$');
+  // 如果选区内没有任何 KaTeX 元素，直接走默认复制
+  if (!fragment.querySelector('.katex')) return;
+
+  // 递归遍历 fragment，重建文本
+  function extractText(node) {
+    // 遇到 .katex 元素：取 annotation 里的源码，加 $ 包裹
+    if (node.nodeType === Node.ELEMENT_NODE) {
+      // .katex-html 是渲染层，跳过（内容在 .katex 父节点处处理）
+      if (node.classList && node.classList.contains('katex-html')) return '';
+      if (node.classList && node.classList.contains('katex')) {
+        const annotation = node.querySelector('annotation[encoding="application/x-tex"]');
+        if (annotation) {
+          const src = annotation.textContent.trim();
+          // 判断是否是 display 模式（父元素有 .katex-display）
+          const isDisplay = node.closest && node.closest('.katex-display');
+          return isDisplay ? `$$${src}$$` : `$${src}$`;
+        }
+        return node.textContent; // fallback
+      }
+      // 其他元素：递归子节点
+      return Array.from(node.childNodes).map(extractText).join('');
     }
-  });
+    // 文本节点：直接返回文字
+    if (node.nodeType === Node.TEXT_NODE) return node.textContent;
+    return '';
+  }
 
+  const text = extractText(fragment);
   e.clipboardData.setData('text/plain', text);
   e.preventDefault();
 });
