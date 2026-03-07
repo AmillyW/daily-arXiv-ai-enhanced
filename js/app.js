@@ -726,11 +726,14 @@ function parseJsonlData(jsonlText, date) {
       
       const primaryCategory = allCategories[0];
       
+      const formatText = (text) => text ? text.replace(/\\n/g, '<br>').replace(/\n/g, '<br>') : '';
+
       if (!result[primaryCategory]) {
         result[primaryCategory] = [];
       }
       
-      const summary = paper.AI && paper.AI.tldr ? paper.AI.tldr : paper.summary;
+      // 2. 使用 formatText 处理 summary
+      const summary = paper.AI && paper.AI.tldr ? formatText(paper.AI.tldr) : paper.summary;
       
       result[primaryCategory].push({
         title: paper.title,
@@ -1342,6 +1345,10 @@ function showPaperDetails(paper, paperIndex) {
   
   // Update modal content
   document.getElementById('modalBody').innerHTML = modalContent;
+  // 当页面内容更新后，检查 MathJax 是否已加载，如果加载了就命令它重新排版
+  if (window.MathJax) {
+    MathJax.typesetPromise().catch((err) => console.log('MathJax渲染错误: ', err));
+  }
   document.getElementById('paperLink').href = paper.url;
   document.getElementById('pdfLink').href = paper.url.replace('abs', 'pdf');
   document.getElementById('htmlLink').href = paper.url.replace('abs', 'html');
