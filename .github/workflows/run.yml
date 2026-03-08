@@ -16,6 +16,18 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
+    - name: Fetch historical data for deduplication
+      run: |
+        echo "Fetching historical data from data branch to empower check_stats.py..."
+        # 检查远程是否存在 data 分支
+        if git ls-remote --heads origin data | grep -q data; then
+          # 把 data 分支里的 data/ 文件夹单独抽出来，放到当前目录下
+          git fetch origin data
+          git checkout origin/data -- data/ 2>/dev/null || echo "No data folder found"
+        else
+          echo "Data branch does not exist yet."
+        fi
+        
     - name: Install dependencies
       run: |
         curl -LsSf https://astral.sh/uv/install.sh | sh
