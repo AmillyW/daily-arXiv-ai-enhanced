@@ -240,3 +240,5 @@
 2026-08-13_AI_enhanced_English.jsonl
 2026-08-14.jsonl
 2026-08-14_AI_enhanced_English.jsonl
+2026-08-18.jsonl
+2026-08-18_AI_enhanced_English.jsonl
